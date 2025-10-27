@@ -16,7 +16,7 @@ print("\nDataset Info:")
 print(df.info())
 
 
-# %%
+
 #Data Cleaning
 
 # Check for missing values
@@ -57,7 +57,7 @@ print("\nSample of cleaned dataset (top 5 rows):")
 print(df.head())
 
 
-# %%
+
 #Data Preprocessing
 
 print(df.columns)
