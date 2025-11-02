@@ -1,212 +1,274 @@
+# app.py - Streamlit Job Recommender (Dark Mode + ML + Animation + Visualization)
 import streamlit as st
 import pandas as pd
-import PyPDF2
-import docx
-import io
+import numpy as np
+import io, os, pickle, PyPDF2, docx, nltk, spacy
+from nltk.corpus import stopwords
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 import matplotlib.pyplot as plt
 from collections import Counter
-import spacy
-import nltk
-from nltk.corpus import stopwords
+import requests
+from streamlit_lottie import st_lottie  # 🔥 for animation
 
-# ----------------------------
-# Libraries Setup
-# ----------------------------
-nltk.download('stopwords')
+# --------------------------
+# Setup
+# --------------------------
+nltk.download('stopwords', quiet=True)
 stop_words = set(stopwords.words('english'))
 
-# Load spacy English model
-nlp = spacy.load("en_core_web_sm")
+try:
+    nlp = spacy.load("en_core_web_sm")
+except Exception:
+    from spacy.lang.en import English
+    nlp = English()
 
-# ----------------------------
-# Streamlit Page Config
-# ----------------------------
-st.set_page_config(page_title="Job Recommendation", page_icon="💼", layout="wide")
+st.set_page_config(page_title="💼 AI Job Recommender", page_icon="💡", layout="wide")
 
-# ----------------------------
-# Load Dataset
-# ----------------------------
-jobs_df = pd.read_csv("jobs_cleaned.csv").fillna("")
+# --------------------------
+# Custom CSS
+# --------------------------
+st.markdown("""
+<style>
+.stApp { background-color:#0e1117; color:#e6edf3; font-family:'Segoe UI',Roboto,Arial,sans-serif; }
+.header-card {
+  background:linear-gradient(90deg,#111418,#1b2228);
+  border-radius:14px; padding:22px;
+  box-shadow:0 6px 24px rgba(0,0,0,0.6);
+  margin-bottom:18px;
+}
+.header-card h1 { color:#00d6a6; margin:0 0 6px 0; font-size:2.1rem; }
+.header-card p { color:#bfc8cf; margin:0; }
+.job-card {
+  background:#14181c; border-radius:12px;
+  padding:14px; margin:12px 0;
+  box-shadow:0 4px 18px rgba(0,0,0,0.55);
+}
+.job-card h4 { color:#5ef3d9; margin:0 0 6px 0; }
+.job-card p { color:#c6d0d6; margin:4px 0; }
+.pill { display:inline-block; padding:6px 10px; border-radius:999px; background:#20262b;
+  color:#9fead3; font-weight:600; margin-right:8px; font-size:12px; }
+[role="alert"], .stAlert, .stException { display:none !important; }
+</style>
+""", unsafe_allow_html=True)
 
-# ----------------------------
-# Predefined Skills List
-# ----------------------------
-skills_list = [
-    "python", "java", "sql", "excel", "finance",
-    "accounting", "machine learning", "statistics",
-    "problem solving", "tally", "communication",
-    "data analysis", "marketing", "sales"
-]
+# --------------------------
+# Helper Functions
+# --------------------------
+def load_lottie_url(url: str):
+    r = requests.get(url)
+    if r.status_code != 200: return None
+    return r.json()
 
-# ----------------------------
-# Resume / Skill Extraction
-# ----------------------------
+def detect_skill_column(df):
+    for col in df.columns:
+        if "skill" in col.lower() or "required" in col.lower():
+            return col
+    for col in ["required_skills","skills","skills_required","skillset"]:
+        if col in df.columns: return col
+    return None
+
+def load_jobs_df():
+    for name in ["jobs_cleaned.csv","jobs_cleaned_small.csv","jobs.csv"]:
+        if os.path.exists(name):
+            try: return pd.read_csv(name).fillna("")
+            except: continue
+    return pd.DataFrame(columns=["job_title","company","location","required_skills","description"])
+
+@st.cache_resource
+def load_vectorizer_and_job_vectors(df, skill_col):
+    vectorizer = None
+    if os.path.exists("vectorizer.pkl"):
+        with open("vectorizer.pkl","rb") as f:
+            vectorizer = pickle.load(f)
+    else:
+        vectorizer = CountVectorizer(stop_words="english")
+
+    if skill_col:
+        texts = df[skill_col].astype(str).fillna("")
+        job_vectors = vectorizer.fit_transform(texts)
+        with open("vectorizer.pkl","wb") as f:
+            pickle.dump(vectorizer,f)
+    else:
+        job_vectors = None
+    return vectorizer, job_vectors
+
 def extract_text_from_pdf(file):
-    pdf_reader = PyPDF2.PdfReader(file)
+    reader = PyPDF2.PdfReader(file)
     text = ""
-    for page in pdf_reader.pages:
-        text += page.extract_text() + " "
+    for p in reader.pages:
+        t = p.extract_text()
+        if t: text += t + " "
     return text
 
 def extract_text_from_docx(file):
     file_bytes = io.BytesIO(file.read())
     doc = docx.Document(file_bytes)
-    return " ".join([para.text for para in doc.paragraphs])
+    return " ".join([p.text for p in doc.paragraphs])
 
-def nlp_extract_skills(text):
+def nlp_extract_skills_from_text(text, skills_list):
     text = text.lower()
     doc = nlp(text)
-    tokens = [token.lemma_ for token in doc if token.is_alpha and token.text not in stop_words]
-    extracted_skills = []
+    tokens = [token.lemma_.lower() for token in doc if token.is_alpha and token.text.lower() not in stop_words]
+    extracted = []
     for skill in skills_list:
-        for token in tokens:
-            if skill in token or token in skill:
-                extracted_skills.append(skill)
+        for tok in tokens:
+            if skill in tok or tok in skill:
+                extracted.append(skill)
                 break
-    return list(set(extracted_skills))
+    return list(set(extracted))
 
-# ----------------------------
-# Streamlit UI
-# ----------------------------
-st.markdown("<h1 style='text-align:center;color:#2C3E50;'>💼 Job Recommendation System</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align:center;color:#16A085;'>Choose an input method and get job recommendations 🚀</p>", unsafe_allow_html=True)
+def calculate_match(job_skill_text, user_skill_tokens):
+    job_tokens = [s.strip().lower() for s in str(job_skill_text).split(",") if s.strip()]
+    matched = set(user_skill_tokens).intersection(set(job_tokens))
+    match_percent = round((len(matched)/len(user_skill_tokens)*100) if user_skill_tokens else 0, 2)
+    return matched, match_percent
 
-option = st.radio("Select Input Method", ["✍️ Enter Skills", "📂 Upload Resume"])
+# --------------------------
+# Load ML Components
+# --------------------------
+jobs_df = load_jobs_df()
+skill_col = detect_skill_column(jobs_df)
+vectorizer, job_vectors = load_vectorizer_and_job_vectors(jobs_df, skill_col)
+
+# --------------------------
+# Header + Animation + Images
+# --------------------------
+with st.container():
+    st.markdown("""
+        <div class="header-card">
+            <h1>💼 Job Recommendation System — ML Powered</h1>
+            <p>Upload your resume or enter your skills to get AI-powered job suggestions.</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    lottie_job = load_lottie_url("https://assets2.lottiefiles.com/packages/lf20_3rwasyjy.json")
+    st_lottie(lottie_job, height=280, key="job_anim")
+
+col1, col2 = st.columns(2)
+with col1:
+    st.image("https://www.artech.com/wp-content/uploads/2025/06/thumbnail_Job-Search-Burnout-is-Real-Here-is-How-to-Stay-Strong-and-Focused.jpg",
+             caption="Stay Focused on Your Job Hunt", use_container_width=True)
+with col2:
+    st.image("https://jobsgaar.com/blog/wp-content/uploads/2021/07/bigstock-170353778.jpg",
+             caption="Find the Right Opportunity", use_container_width=True)
+
+st.write("")
+
+# --------------------------
+# Input Section
+# --------------------------
+option = st.radio("Choose Input Method", ["✍️ Enter Skills", "📂 Upload Resume"], horizontal=True)
 user_skills = []
+skills_list_small = ["python","java","sql","excel","finance","machine learning","nlp","aws","azure",
+                     "communication","pandas","numpy","tensorflow","deep learning","problem solving"]
 
-# ----------------------------
-# User Input: Skills / Resume
-# ----------------------------
 if option == "✍️ Enter Skills":
-    skill_input = st.text_area("Enter your skills (comma separated)", "")
+    skill_input = st.text_area("Enter your skills (comma separated):", placeholder="python, sql, excel, communication")
     if skill_input:
-        text = skill_input.lower()
-        user_skills = [s.strip().lower() for s in text.split(",") if s.strip()]
-
+        user_skills = [s.strip().lower() for s in skill_input.split(",") if s.strip()]
 elif option == "📂 Upload Resume":
-    uploaded_file = st.file_uploader("Upload your Resume", type=["pdf", "docx"])
+    uploaded_file = st.file_uploader("Upload your resume (pdf/docx)", type=["pdf","docx"])
     if uploaded_file:
-        if uploaded_file.name.endswith(".pdf"):
-            resume_text = extract_text_from_pdf(uploaded_file)
-        else:
-            resume_text = extract_text_from_docx(uploaded_file)
-        user_skills = nlp_extract_skills(resume_text)
-        st.subheader("✅ Extracted Skills from Resume")
-        st.success(", ".join(user_skills) if user_skills else "No skills found")
+        full_text = extract_text_from_pdf(uploaded_file) if uploaded_file.name.endswith(".pdf") else extract_text_from_docx(uploaded_file)
+        user_skills = nlp_extract_skills_from_text(full_text, skills_list_small)
+        st.success(f"Extracted Skills: {', '.join(user_skills)}")
 
-# ----------------------------
-# Skills Matching & Job Recommendation
-# ----------------------------
-if user_skills:
-
-    # ----------------------------
-    # Matching Function (Matched + Unmatched + Extra)
-    # ----------------------------
-    def calculate_match(job_skills, user_skills):
-        job_tokens = [skill.strip().lower() for skill in job_skills.split(",") if skill.strip()]
-        user_tokens = [s.lower() for s in user_skills if s.strip()]
-
-        matched = set(user_tokens).intersection(set(job_tokens))
-        unmatched = set(user_tokens) - matched
-        extra_job_skills = set(job_tokens) - set(user_tokens)
-
-        match_percent = round((len(matched) / len(user_tokens) * 100) if user_tokens else 0, 2)
-        return matched, unmatched, extra_job_skills, match_percent
-
-    matched_skills_list = []
-    unmatched_skills_list = []
-    extra_job_skills_list = []
-    match_percent_list = []
-
-    for idx, row in jobs_df.iterrows():
-        matched, unmatched, extra_skills, percent = calculate_match(row["required_skills"], user_skills)
-        
-        matched_skills_list.append(", ".join(matched) if matched else "None")
-        unmatched_skills_list.append(", ".join(unmatched) if unmatched else "None")
-        extra_job_skills_list.append(", ".join(extra_skills) if extra_skills else "None")
+# --------------------------
+# ML Matching Logic
+# --------------------------
+def rank_jobs(user_skills_tokens):
+    df = jobs_df.copy()
+    matched_list, match_percent_list = [], []
+    for idx, row in df.iterrows():
+        matched, percent = calculate_match(row.get(skill_col,""), user_skills_tokens)
+        matched_list.append(", ".join(matched))
         match_percent_list.append(percent)
+    df["Matched Skills"] = matched_list
+    df["Match %"] = match_percent_list
 
-    jobs_df["Matched Skills"] = matched_skills_list
-    jobs_df["Unmatched Skills"] = unmatched_skills_list
-    jobs_df["Extra Job Skills"] = extra_job_skills_list
-    jobs_df["Match %"] = match_percent_list
-
-    # ----------------------------
-    # Display Top 10 Recommended Jobs
-    # ----------------------------
-    top_jobs = jobs_df.sort_values(by="Match %", ascending=False).head(10)
-
-    if not top_jobs.empty:
-        st.markdown("## 🔎 Top 10 Recommended Jobs")
-        for idx, row in top_jobs.iterrows():
-            st.markdown(
-                f"""
-                <div style="padding:15px;margin:10px 0;border-radius:10px;
-                            background-color:#ECF0F1;border-left:6px solid #3498DB;">
-                    <h4 style="color:#2C3E50;margin:0;">{row['job_title']} at {row['company']}</h4>
-                    <p style="color:#2C3E50;margin:2px 0;"><b>📍 Location:</b> {row['location']}</p>
-                    <p style="color:#2C3E50;margin:2px 0;"><b>✅ Matched Skills:</b> {row['Matched Skills']}</p>
-                    <p style="color:#2C3E50;margin:2px 0;"><b>❌ Unmatched Skills:</b> {row['Unmatched Skills']}</p>
-                    <p style="color:#2C3E50;margin:2px 0;"><b>💡 Extra Job Skills:</b> {row['Extra Job Skills']}</p>
-                    <p style="color:#2C3E50;margin:2px 0;"><b>📊 Match Percentage:</b> {row['Match %']:.2f}%</p>
-                </div>
-                """, unsafe_allow_html=True
-            )
-
-        # ----------------------------
-        # Visualization 1: Match % Bar Chart
-        # ----------------------------
-        st.markdown("### 📌 Job-wise Match %")
-        fig, ax = plt.subplots(figsize=(10,5))
-        top_jobs_sorted = top_jobs.sort_values(by="Match %", ascending=True)
-        ax.barh(top_jobs_sorted["job_title"], top_jobs_sorted["Match %"], color="#3498DB")
-        ax.set_xlabel("Match Percentage")
-        ax.set_ylabel("Job Title")
-        ax.set_title("Job Match Percentage")
-        st.pyplot(fig)
-
-        # ----------------------------
-        # Visualization 2: Pie Chart for Best Job
-        # ----------------------------
-        st.markdown("### 🥧 Skill Match Breakdown (Best Job)")
-        best_job = top_jobs.iloc[0]
-        matched_count = len(best_job["Matched Skills"].split(", ")) if best_job["Matched Skills"] != "None" else 0
-        unmatched_count = len(best_job["Unmatched Skills"].split(", ")) if best_job["Unmatched Skills"] != "None" else 0
-
-        fig2, ax2 = plt.subplots()
-        ax2.pie(
-            [matched_count, unmatched_count],
-            labels=["Matched Skills", "Unmatched Skills"],
-            autopct="%1.1f%%",
-            colors=["#2ECC71", "#E74C3C"]
-        )
-        ax2.set_title(f"Skill Match for {best_job['job_title']}")
-        st.pyplot(fig2)
-
-        # ----------------------------
-        # Visualization 3: Skill Frequency Across Top 10 Jobs
-        # ----------------------------
-        st.markdown("### 📊 Most Frequently Matched Skills")
-        all_matched_skills=[]
-        for skills in top_jobs["Matched Skills"]:
-            if skills!="None":
-                all_matched_skills.extend(skills.split(", "))
-        if all_matched_skills:
-            skill_counts=Counter(all_matched_skills)
-            fig3,ax3=plt.subplots()
-            ax3.bar(skill_counts.keys(),skill_counts.values(),color="#9B59B6")
-            ax3.set_xlabel("Skills")
-            ax3.set_ylabel("Frequency")
-            ax3.set_title("Top Matched Skills Across Top 10 Jobs")
-            st.pyplot(fig3)
-
+    if job_vectors is not None and vectorizer is not None and len(user_skills_tokens)>0:
+        user_text = ", ".join(user_skills_tokens)
+        user_vec = vectorizer.transform([user_text])
+        sim_scores = cosine_similarity(user_vec, job_vectors).flatten()
+        df["ML Score"] = sim_scores
+        df["Final Score"] = 0.6*df["ML Score"] + 0.4*(df["Match %"]/100)
     else:
-        st.warning("⚠️ No matching jobs found.")
+        df["ML Score"] = 0.0
+        df["Final Score"] = df["Match %"]/100
+
+    df = df.sort_values(by="Final Score", ascending=False)
+    return df
+
+# --------------------------
+# Display Results
+# --------------------------
+if user_skills:
+    ranked = rank_jobs(user_skills)
+    if ranked.empty:
+        st.warning("No jobs matched. Try adding more relevant skills.")
+    else:
+        st.markdown("## 🔍 Top Job Recommendations")
+        top_jobs = ranked.head(10)
+        for _, row in top_jobs.iterrows():
+            st.markdown(f"""
+            <div class="job-card">
+                <h4>{row.get('job_title','N/A')}</h4>
+                <p>🏢 {row.get('company','Unknown')} | 📍 {row.get('location','Remote')}</p>
+                <p><span class="pill">✅ Matched: {row['Matched Skills']}</span>
+                <span class="pill">🤖 ML Score: {row['ML Score']:.2f}</span>
+                <span class="pill">📊 Final: {row['Final Score']:.2f}</span></p>
+            </div>
+            """, unsafe_allow_html=True)
+
+        # --------------------------
+        # Visualization Section
+        # --------------------------
+        st.write("")
+        if st.button("📊 View Analysis"):
+            st.markdown("### 📈 Job Matching Analysis")
+
+            matched_total = sum([len(str(x).split(",")) for x in top_jobs["Matched Skills"]])
+            unmatched_total = max(0, len(user_skills)*len(top_jobs) - matched_total)
+            fig1, ax1 = plt.subplots(facecolor="#0e1117")
+            ax1.set_facecolor("#0e1117")
+            ax1.pie(
+                [matched_total, unmatched_total],
+                labels=["Matched", "Unmatched"],
+                autopct="%1.1f%%",
+                startangle=90,
+                colors=["#00d6a6", "#d946ef"],
+                textprops={"color": "white", "fontsize": 12}
+            )
+            ax1.axis("equal")
+            st.pyplot(fig1)
+
+            fig2, ax2 = plt.subplots(facecolor="#0e1117")
+            ax2.set_facecolor("#0e1117")
+            ax2.bar(top_jobs["job_title"], top_jobs["Match %"], color="#00d6a6", alpha=0.8)
+            ax2.set_xlabel("Job Title", color="white")
+            ax2.set_ylabel("Match %", color="white")
+            ax2.set_title("Skill Match Percentage per Job", color="white")
+            ax2.tick_params(axis="x", colors="white", rotation=45)
+            ax2.tick_params(axis="y", colors="white")
+            st.pyplot(fig2)
+
+            all_matched_skills = [skill.strip() for sublist in top_jobs["Matched Skills"] for skill in str(sublist).split(",") if skill.strip()]
+            freq = Counter(all_matched_skills)
+            if freq:
+                fig3, ax3 = plt.subplots(facecolor="#0e1117")
+                ax3.set_facecolor("#0e1117")
+                skills, counts = zip(*freq.items())
+                ax3.barh(skills, counts, color="#5ef3d9")
+                ax3.set_xlabel("Frequency", color="white")
+                ax3.set_ylabel("Skills", color="white")
+                ax3.set_title("Matched Skill Frequency Across Top Jobs", color="white")
+                ax3.tick_params(axis="x", colors="white")
+                ax3.tick_params(axis="y", colors="white")
+                st.pyplot(fig3)
+
 else:
-    st.info("👉 Enter your skills or upload a resume to get job recommendations.")
+    st.info("👉 Start by entering your skills or uploading your resume.")
 
-
-
-
-
-
+# --------------------------
+# --------------------------
