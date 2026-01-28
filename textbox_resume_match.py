@@ -2,20 +2,29 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import io, os, pickle, PyPDF2, docx, nltk, spacy
+import io, os, pickle
+import PyPDF2
+import nltk
+import spacy
+import matplotlib.pyplot as plt
+import requests
+
+from docx import Document
 from nltk.corpus import stopwords
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-import matplotlib.pyplot as plt
 from collections import Counter
-import requests
-from streamlit_lottie import st_lottie  # 🔥 for animation
+from streamlit_lottie import st_lottie
+
 
 # --------------------------
 # Setup
 # --------------------------
-nltk.download('stopwords', quiet=True)
-stop_words = set(stopwords.words('english'))
+nltk.download("punkt", quiet=True)
+nltk.download("stopwords", quiet=True)
+
+stop_words = set(stopwords.words("english"))
+
 
 try:
     nlp = spacy.load("en_core_web_sm")
