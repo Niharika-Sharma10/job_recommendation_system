@@ -1,45 +1,28 @@
+
 # app.py - Streamlit Job Recommender (Dark Mode + ML + Animation + Visualization)
 import streamlit as st
 import pandas as pd
 import numpy as np
-import io, os, pickle
-import PyPDF2
-import nltk
-import spacy
-import matplotlib.pyplot as plt
-import requests
-import docx
-
-from docx import Document
+import io, os, pickle, PyPDF2, docx, nltk, spacy
 from nltk.corpus import stopwords
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+import matplotlib.pyplot as plt
 from collections import Counter
-from streamlit_lottie import st_lottie
-
-
+import requests
+from streamlit_lottie import st_lottie  # 🔥 for animation
 
 # --------------------------
 # Setup
 # --------------------------
-nltk.download("punkt", quiet=True)
-nltk.download("stopwords", quiet=True)
+nltk.download('stopwords', quiet=True)
+stop_words = set(stopwords.words('english'))
 
-stop_words = set(stopwords.words("english"))
-
-
-@st.cache_resource
-def load_spacy_model():
-    try:
-        return spacy.load("en_core_web_sm")
-    except:
-        from spacy.lang.en import English
-        nlp = English()
-        nlp.add_pipe("sentencizer")
-        return nlp
-
-nlp = load_spacy_model()
-
+try:
+    nlp = spacy.load("en_core_web_sm")
+except Exception:
+    from spacy.lang.en import English
+    nlp = English()
 
 st.set_page_config(page_title="💼 AI Job Recommender", page_icon="💡", layout="wide")
 
