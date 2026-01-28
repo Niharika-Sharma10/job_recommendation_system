@@ -8,6 +8,7 @@ import nltk
 import spacy
 import matplotlib.pyplot as plt
 import requests
+import docx
 
 from docx import Document
 from nltk.corpus import stopwords
@@ -27,11 +28,18 @@ nltk.download("stopwords", quiet=True)
 stop_words = set(stopwords.words("english"))
 
 
-try:
-    nlp = spacy.load("en_core_web_sm")
-except Exception:
-    from spacy.lang.en import English
-    nlp = English()
+@st.cache_resource
+def load_spacy_model():
+    try:
+        return spacy.load("en_core_web_sm")
+    except:
+        from spacy.lang.en import English
+        nlp = English()
+        nlp.add_pipe("sentencizer")
+        return nlp
+
+nlp = load_spacy_model()
+
 
 st.set_page_config(page_title="💼 AI Job Recommender", page_icon="💡", layout="wide")
 
