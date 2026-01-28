@@ -8,6 +8,8 @@ nltk
 spacy
 streamlit-lottie
 requests
+matplotlib
+
 
 
 
